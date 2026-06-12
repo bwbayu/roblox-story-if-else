@@ -2,11 +2,10 @@ import { useState } from 'react';
 
 interface NavbarProps {
   onCreateStory: () => void;
-  onOpenSettings: () => void;
   showCreateStory?: boolean;
 }
 
-export default function Navbar({ onCreateStory, onOpenSettings, showCreateStory = true }: NavbarProps) {
+export default function Navbar({ onCreateStory, showCreateStory = true }: NavbarProps) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
 
   return (
@@ -45,18 +44,6 @@ export default function Navbar({ onCreateStory, onOpenSettings, showCreateStory 
                 <span className="relative z-10">Create Story</span>
               </button>
             )}
-
-            {/* Settings Button */}
-            <button
-              onClick={onOpenSettings}
-              className="rounded-lg p-2 text-text-muted transition-colors duration-200 hover:bg-white/5 hover:text-text-primary"
-              title="API Settings"
-            >
-              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-            </button>
 
             {/* Avatar */}
             <button className="group relative h-9 w-9 overflow-hidden rounded-full bg-linear-to-br from-(--color-accent-primary) to-(--color-accent-cyan) p-0.5 transition-all duration-300 hover:scale-105 hover:shadow-lg hover:shadow-(--color-accent-primary)/30">

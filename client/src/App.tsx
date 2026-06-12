@@ -1,11 +1,10 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import Dashboard from './pages/Dashboard';
 import CreateStoryModal from './components/CreateStoryModal';
 import QuestionnaireModal from './components/QuestionnaireModal';
 import PipelineLoadingOverlay from './components/PipelineLoadingOverlay';
-import SettingsModal from './components/SettingsModal';
 import SceneEditor from './pages/SceneEditor';
 import { useStoryboards, useDashboardStats } from './hooks/useStoryboards';
 import { useStartPipeline, useAnswerQuestions, usePipelineStatus } from './hooks/usePipeline';
@@ -30,24 +29,12 @@ function App() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isQuestionnaireOpen, setIsQuestionnaireOpen] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [questions, setQuestions] = useState<ClarificationQuestion[]>([]);
   const [isPipelineProcessing, setIsPipelineProcessing] = useState(false);
   const [pipelineStatusText, setPipelineStatusText] = useState('Initializing pipeline...');
-  const [hasApiKey, setHasApiKey] = useState(() => Boolean(localStorage.getItem('gemini_api_key')));
   const [apiError, setApiError] = useState<string | null>(null);
 
   const startPipeline = useStartPipeline();
-
-  // Listen for API key errors dispatched by the axios interceptor
-  useEffect(() => {
-    const handler = ((_e: CustomEvent) => {
-      setApiError('Your Gemini API key appears to be invalid. Please update it in Settings.');
-      setIsSettingsOpen(true);
-    }) as EventListener;
-    window.addEventListener('gemini-api-key-error', handler);
-    return () => window.removeEventListener('gemini-api-key-error', handler);
-  }, []);
   const answerQuestions = useAnswerQuestions();
 
   // Pipeline status polling — react to changes via onPipelineStatusChange callback
@@ -76,13 +63,7 @@ function App() {
 
     if (status.status === 'error') {
       setIsPipelineProcessing(false);
-      const errMsg = status.error || 'Pipeline encountered an error.';
-      if (errMsg.toLowerCase().includes('api_key') || errMsg.toLowerCase().includes('api key')) {
-        setApiError('Your Gemini API key is invalid or expired. Please update it in Settings.');
-        setIsSettingsOpen(true);
-      } else {
-        setApiError(errMsg);
-      }
+      setApiError(status.error || 'Pipeline encountered an error.');
     }
   }, [navigate]);
 
@@ -152,7 +133,7 @@ function App() {
   };
 
   const isDashboard = location.pathname === '/';
-  const showGenerateFeatures = import.meta.env.DEV || hasApiKey;
+  const showGenerateFeatures = import.meta.env.DEV;
 
   return (
     <div className="bg-mesh noise-overlay relative min-h-screen overflow-x-hidden pt-16">
@@ -169,7 +150,6 @@ function App() {
 
       <Navbar
         onCreateStory={handleOpenCreateModal}
-        onOpenSettings={() => setIsSettingsOpen(true)}
         showCreateStory={isDashboard && showGenerateFeatures}
       />
 
@@ -207,12 +187,6 @@ function App() {
       <PipelineLoadingOverlay
         isVisible={isPipelineProcessing}
         statusText={pipelineStatusText}
-      />
-
-      <SettingsModal
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        onSave={() => setHasApiKey(Boolean(localStorage.getItem('gemini_api_key')))}
       />
     </div>
   );

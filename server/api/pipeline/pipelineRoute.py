@@ -10,8 +10,7 @@ Endpoints:
 import uuid
 import asyncio
 
-from typing import Optional
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException
 
 from models import (
     AddSceneRequest,
@@ -25,8 +24,6 @@ from models import (
     StoryBoard,
     PipelineStatusResponse,
 )
-
-from google import genai
 
 from api.firestore.firestoreService import firestore_service
 from api.pipeline.pipelineService import PipelineService
@@ -47,21 +44,8 @@ _pipeline_service = PipelineService()
 _pipeline_tasks: dict[str, asyncio.Task] = {}
 
 
-@router.post("/validate-key")
-async def validate_api_key(x_gemini_api_key: Optional[str] = Header(None)):
-    """Validate a Gemini API key by making a lightweight models.list() call."""
-    if not x_gemini_api_key:
-        raise HTTPException(status_code=400, detail="No API key provided")
-    try:
-        client = genai.Client(api_key=x_gemini_api_key)
-        client.models.list(config={"page_size": 1})
-        return {"valid": True}
-    except Exception as e:
-        return {"valid": False, "error": str(e)}
-
-
 @router.post("/start", response_model=SessionResponse)
-async def start_pipeline(request: StartRequest, x_gemini_api_key: Optional[str] = Header(None)) -> SessionResponse:
+async def start_pipeline(request: StartRequest) -> SessionResponse:
     """
     Submit a script to begin the full end-to-end generation pipeline.
 
@@ -89,11 +73,11 @@ async def start_pipeline(request: StartRequest, x_gemini_api_key: Optional[str] 
         script=session.script,
     )
 
-    return await _pipeline_service.run_full_pipeline(session, _pipeline_tasks, gemini_api_key=x_gemini_api_key)
+    return await _pipeline_service.run_full_pipeline(session, _pipeline_tasks)
 
 
 @router.post("/{session_id}/answer", response_model=SessionResponse)
-async def answer_questions(session_id: str, request: AnswerRequest, x_gemini_api_key: Optional[str] = Header(None)) -> SessionResponse:
+async def answer_questions(session_id: str, request: AnswerRequest) -> SessionResponse:
     """
     Provide answers to the Director's clarifying questions to continue the pipeline.
     """
@@ -120,7 +104,7 @@ async def answer_questions(session_id: str, request: AnswerRequest, x_gemini_api
         [{"question": qa.question, "selected_options": qa.selected_options} for qa in session.qa_history],
     )
 
-    return await _pipeline_service.run_full_pipeline(session, _pipeline_tasks, gemini_api_key=x_gemini_api_key)
+    return await _pipeline_service.run_full_pipeline(session, _pipeline_tasks)
 
 
 @router.get("/status/{session_id}", response_model=PipelineStatusResponse)

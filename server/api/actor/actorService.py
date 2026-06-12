@@ -17,15 +17,13 @@ load_dotenv()
 
 _client = None
 
-def _get_client(api_key: str | None = None):
+def _get_client():
     global _client
-    if api_key:
-        return genai.Client(api_key=api_key)
     if _client is None:
         key = os.getenv("GEMINI_API_KEY")
         if not key:
             from api.exceptions import GeminiApiKeyError
-            raise GeminiApiKeyError("No Gemini API key provided. Please set your API key in Settings.")
+            raise GeminiApiKeyError("No Gemini API key provided. Please set GEMINI_API_KEY in server/.env.")
         _client = genai.Client(api_key=key)
     return _client
 
@@ -35,7 +33,6 @@ async def generate_and_save_actor_images(
     story_id: str,
     actors: list[Actor],
     template_image_path: Optional[Path] = None,
-    gemini_api_key: str | None = None,
 ) -> list[Actor]:
     """
     Generate actor reference images using Gemini Flash Image,
@@ -69,7 +66,7 @@ async def generate_and_save_actor_images(
             contents.append(template_img)
 
         try:
-            response = await _get_client(api_key=gemini_api_key).aio.models.generate_content(
+            response = await _get_client().aio.models.generate_content(
                 model="gemini-3.1-flash-image-preview",
                 contents=contents,
             )

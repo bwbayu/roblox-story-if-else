@@ -8,8 +8,7 @@ POST /api/scene/generate-video/status  — Poll generation status
 import asyncio
 import logging
 
-from typing import Optional
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from models import StoryBoard
@@ -49,7 +48,7 @@ class GenerateSceneResponse(BaseModel):
 # --- Endpoints ---
 
 @router.post("/generate-video", response_model=GenerateSceneResponse)
-async def generate_scene_video(request: GenerateSceneRequest, x_gemini_api_key: Optional[str] = Header(None)):
+async def generate_scene_video(request: GenerateSceneRequest):
     """
     Start Veo 3.1 video generation for a scene's 3 segments.
     Returns immediately; generation runs in the background.
@@ -107,7 +106,6 @@ async def generate_scene_video(request: GenerateSceneRequest, x_gemini_api_key: 
                     scene=scene,
                     actors=storyboard.actors,
                     themes=storyboard.themes,
-                    gemini_api_key=x_gemini_api_key,
                 )
             else:
                 await generate_scene_videos_apixo(

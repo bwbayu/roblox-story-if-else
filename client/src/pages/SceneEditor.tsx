@@ -192,7 +192,7 @@ function SceneNode({ scene, isActive, isGenerating, hasVideo, showGenerateFeatur
 }
 
 export default function SceneEditor() {
-  const showGenerateFeatures = Boolean(localStorage.getItem('gemini_api_key')) || import.meta.env.DEV;
+  const showGenerateFeatures = import.meta.env.DEV;
   const { storyId = null } = useParams<{ storyId: string }>();
   const navigate = useNavigate();
   const { data: storyboard, isLoading: isLoadingStoryboard } = useStoryboard(storyId);
@@ -302,12 +302,7 @@ export default function SceneEditor() {
         if (pollingSceneId) next.delete(pollingSceneId);
         return next;
       });
-      const msg = data.message || 'Scene generation failed.';
-      if (msg.toLowerCase().includes('api key') || msg.toLowerCase().includes('gemini_api_key')) {
-        window.dispatchEvent(new CustomEvent('gemini-api-key-error', { detail: msg }));
-      } else {
-        setSceneGenError(msg);
-      }
+      setSceneGenError(data.message || 'Scene generation failed.');
     }
   }, [pollingSceneId]);
 

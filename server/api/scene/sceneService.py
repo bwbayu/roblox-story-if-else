@@ -35,15 +35,13 @@ logger = logging.getLogger(__name__)
 
 _client = None
 
-def _get_client(api_key: str | None = None):
+def _get_client():
     global _client
-    if api_key:
-        return genai.Client(api_key=api_key)
     if _client is None:
         key = os.getenv("GEMINI_API_KEY")
         if not key:
             from api.exceptions import GeminiApiKeyError
-            raise GeminiApiKeyError("No Gemini API key provided. Please set your API key in Settings.")
+            raise GeminiApiKeyError("No Gemini API key provided. Please set GEMINI_API_KEY in server/.env.")
         _client = genai.Client(api_key=key)
     return _client
 
@@ -303,7 +301,6 @@ async def generate_scene_videos(
     scene: Scene,
     actors: list[Actor],
     themes: list[Theme],
-    gemini_api_key: str | None = None,
 ) -> None:
     """
     Generate videos for all 3 segments of a scene sequentially.
@@ -314,7 +311,7 @@ async def generate_scene_videos(
     """
     # Create a single client for the entire scene generation to avoid
     # "client has been closed" errors from ephemeral client instances.
-    client = _get_client(api_key=gemini_api_key)
+    client = _get_client()
 
     previous_video = None
     seg1_video_bytes: bytes | None = None

@@ -4,17 +4,9 @@
 
 > AI-powered cinematic visual novel studio — build interactive stories with AI-generated scripts, character art, and cinematic video scenes.
 
-> [!IMPORTANT]
-> **A Gemini API key is required to use generation features** (Create Story, Generate Scene).
-> After opening the app, click the **gear icon (⚙)** in the top-right navbar → enter your Gemini API key → Save.
-> Get api key at [Google AI Studio](https://aistudio.google.com/apikey).
-> The key is stored in the browser and forwarded to this backend in the `X-Gemini-Api-Key` header for generation requests.
-> For safety, we recommend revoking this key in Google AI Studio after using this app.
-> Without a key, the app runs in read-only mode (you can browse existing storyboards).
-
 Demo : https://www.youtube.com/watch?v=WtlUJYufBNU
 
-Live App : https://asas-demo.web.app
+Live App : https://scene-studio-499213.web.app/
 
 **Gemini Hackathon — Creative Storyteller**
 
@@ -137,211 +129,91 @@ gemini-hackathon/
 
 ---
 
-## Running Locally
+## Multi-Agent Architecture
 
-### Prerequisites
+SceneStudio is built around a **multi-agent pipeline** rather than a single monolithic prompt. Each agent is a specialized [Google ADK](https://google.github.io/adk-docs/) `LlmAgent` with its own role, system instruction, structured Pydantic output schema, and tuned reasoning budget. The orchestrator ([`storyBoardService`](server/api/story_board/storyBoardService.py)) runs agents in parallel where their work is independent and sequentially where one depends on another's output, passing structured JSON between stages.
 
-- **Node.js 18+** (or [Bun](https://bun.sh/))
-- **Python 3.11+**
-- **FFmpeg** — required for merging video segments
-  - macOS: `brew install ffmpeg`
-  - Ubuntu: `sudo apt install ffmpeg`
-  - Windows: download from [ffmpeg.org](https://ffmpeg.org/download.html) and add to PATH
-- A **Google Cloud Platform** account
-- A **Gemini API key** from [Google AI Studio](https://aistudio.google.com/apikey)
-- *(Optional)* An **Apixo API key** for the fallback video provider
+### The Crew — Main Story Pipeline
 
----
+The pipeline models a real film production studio. Seven agents collaborate, each "hired" for one job:
 
-### Step 1 — Clone the Repository
+| Agent | Role | Job | Reasoning |
+|-------|------|-----|-----------|
+| **Director** ([`director.py`](server/agents/director.py)) | Pre-production lead | Reads the raw story idea and decides if the brief is complete. If genre, characters, settings, conflict, or mood are ambiguous, it returns **2–4 multiple-choice clarifying questions** to the user. Once satisfied, it emits a structured `DirectorAnalysis` (title, genre, tone, setting, characters, mood, narrative summary) that briefs the rest of the crew. | `high` |
+| **Screenwriter** ([`screenwriter.py`](server/agents/screenwriter.py)) | Story structure | Turns the Director's brief into a **branching structure of 5–7 scenes**. Every non-ending scene has exactly 2 choices that point to valid scene IDs; 2–3 scenes are endings. Produces the narrative graph (setup → branching tension → diverging resolutions). | `low` |
+| **Casting Director** ([`casting.py`](server/agents/casting.py)) | Characters & costume | Creates a precise visual `Actor` profile for every named character — age, build, hair, eyes, distinguishing features, and outfit — written specifically to drive consistent image and video generation. | `low` |
+| **Production Designer** ([`production_designer.py`](server/agents/production_designer.py)) | Locations | Creates a `Theme` profile for each distinct location — atmosphere, architecture, and detailed lighting (time of day, sources, color temperature, weather). | `low` |
+| **Segment Engineer** ([`segment_engineer.py`](server/agents/segment_engineer.py)) | Cinematography | Breaks **each scene into exactly 3 sequential ~8-second video segments**, emitting a Veo-ready `visual_prompt`, camera movement, action, dialogue lines, and audio design (BGM + SFX) per segment. Segment 1 establishes, segment 2 peaks, segment 3 resolves into the player's choice. | `medium` |
+| **Scene Director** ([`scene_director.py`](server/agents/scene_director.py)) | Add-scene Q&A | Sub-pipeline counterpart to the Director, used when a creator adds a new scene to an existing storyboard. Reviews the new scene against existing actors/themes/neighbors and asks 1–3 clarifying questions before producing a per-scene brief. | `medium` |
+| **Scene Writer** ([`scene_writer.py`](server/agents/scene_writer.py)) | Add-scene writing | Writes the title, summary, and player choice labels for a single new scene so it fits seamlessly into the existing narrative graph. | `low` |
 
-```bash
-git clone https://github.com/bwbayu/SceneStudio.git
-cd SceneStudio
+### How the Agents Communicate
+
+Agents do **not** talk to each other directly or share conversational memory — the orchestrator passes **structured JSON** between them, which keeps each stage independently testable and validated:
+
+```
+User story idea
+       │
+       ▼
+┌──────────────┐   questions ?
+│  DIRECTOR    │ ───────────────► ask user → loop back with Q&A history
+│ (high think) │
+└──────┬───────┘ DirectorAnalysis (JSON brief)
+       │
+       ▼   ── runs in PARALLEL (asyncio.gather) ──
+┌──────────────┐  ┌──────────────┐  ┌─────────────────────┐
+│ SCREENWRITER │  │   CASTING    │  │ PRODUCTION DESIGNER │
+│   scenes[]   │  │   actors[]   │  │      themes[]       │
+└──────┬───────┘  └──────┬───────┘  └──────────┬──────────┘
+       └─────────────────┼─────────────────────┘
+                         ▼   ── runs in PARALLEL ──
+              ┌────────────────────┐   ┌─────────────────────┐
+              │  SEGMENT ENGINEER  │   │ Thumbnail generation│
+              │  3 segments/scene  │   │  (Gemini Flash Image)│
+              └─────────┬──────────┘   └──────────┬──────────┘
+                        └──────────────┬──────────┘
+                                       ▼
+                         Assemble StoryBoard → persist to Firestore
 ```
 
----
+1. **Director loop (sequential, stateful via the user).** The Director runs first. If it returns `questions`, the API surfaces them to the UI and the session pauses in `clarifying` state; the user's answers are appended to a `qa_history` and the Director is re-invoked until it returns `ready` + an analysis.
+2. **Specialist fan-out (parallel).** The analysis brief is sent simultaneously to the Screenwriter, Casting, and Production Designer via `asyncio.gather` — they have no dependency on each other.
+3. **Engineering + thumbnail (parallel).** Their combined output (scenes + actors + themes) feeds the Segment Engineer, which runs in parallel with cinematic thumbnail generation.
+4. **Assembly.** The orchestrator validates every agent's JSON against a Pydantic schema, assembles the final `StoryBoard`, and persists it to Firestore. Image and video generation then run as background phases.
 
-### Step 2 — Google Cloud Setup
+### Add-Scene Sub-Pipeline
 
-#### 2a. Create a GCP Project
-1. Go to [console.cloud.google.com](https://console.cloud.google.com)
-2. Create a new project (note the **Project ID**)
-
-#### 2b. Enable Required APIs
-In the GCP console, enable:
-- **Cloud Firestore API**
-- **Cloud Storage API**
-- **Vertex AI API** (if using Veo via Vertex) — or ensure Gemini Developer API access
-
-#### 2c. Create a Firestore Database
-1. Navigate to **Firestore** in the GCP console
-2. Click **Create Database**
-3. Choose **Native mode**
-4. Set a **Database ID** — you will set it in your `.env` file
-5. Choose a region and click **Create**
-
-#### 2d. Create a GCS Bucket
-1. Navigate to **Cloud Storage** in the GCP console
-2. Click **Create Bucket**
-3. Choose a globally unique name (e.g., `scenestudio-assets-yourprojectid`)
-4. Set **Access control** to **Fine-grained** and make objects publicly readable
-   - Add an allUsers member with **Storage Object Viewer** role
-5. Note the bucket name — you will set it in your `.env` file
-
-#### 2e. Create a Service Account
-1. Navigate to **IAM & Admin → Service Accounts**
-2. Click **Create Service Account** with a descriptive name
-3. Grant the following roles:
-   - **Cloud Datastore User** (Firestore read/write)
-   - **Storage Object Admin** (GCS upload/download)
-4. Click **Done**, then open the service account
-5. Go to **Keys → Add Key → Create new key → JSON**
-6. Download the JSON file and place it at:
-   ```
-   server/keys/gemini-hackathon.json
-   ```
+Adding a scene to an existing storyboard reuses the same pattern at smaller scale: **Scene Director** (clarifying Q&A) → **Scene Writer** (title/summary/choices) → **Segment Engineer** (3 segments) → image/video generation, wired into the existing narrative graph.
 
 ---
 
-### Step 3 — Backend Setup
+## Generative Models
 
-```bash
-cd server
+SceneStudio uses three distinct Gemini-family models, each matched to a modality:
 
-# Create and activate a virtual environment
-python -m venv env
-source env/bin/activate       # macOS/Linux
-# env\Scripts\activate        # Windows
+### 1. Text generation — `gemini-3-flash-preview`
+Powers **all seven ADK agents**. Each agent is configured with `output_schema=<PydanticModel>` so the model returns strictly-typed JSON, and with a per-agent `ThinkingConfig` (`thinking_level` high → low) so reasoning budget is spent where it matters — the Director reasons hard about story completeness, while structured emitters like Casting run lean.
 
-# Install dependencies
-pip install -r requirements.txt
+### 2. Image generation — `gemini-3.1-flash-image-preview`
+Generates every still asset from the agents' text profiles:
+- **Actor portraits** ([`actorService.py`](server/api/actor/actorService.py)) from each Casting profile
+- **Location/theme art** ([`themeService.py`](server/api/theme/themeService.py)) from each Production Design profile
+- **Story thumbnail** ([`storyBoardService.py`](server/api/story_board/storyBoardService.py)) — a 16:9 cinematic poster combining the lead actor and primary location
 
-# Configure environment variables
-cp .env.example .env
-```
+These images are not just display art — they become the **visual anchors** that keep characters and locations consistent in the video stage.
 
-Edit `server/.env` and fill in your keys:
+### 3. Video generation — `veo-3.1-fast-generate-preview`
+Each scene is rendered as **three sequential 8-second segments** ([`sceneService.py`](server/api/scene/sceneService.py)), merged with FFmpeg into one ~24-second cinematic clip:
 
-```env
-GEMINI_API_KEY=your_gemini_api_key_here
-APIXO_API_KEY=your_apixo_api_key_here        # optional — required for Apixo video provider
-GCS_BUCKET_NAME=your-gcs-bucket-name         # the bucket you created in step 2d
-FIRESTORE_DATABASE=gemini-hackathon           # the Firestore database ID from step 2c
-```
+- **Segment 1 — text-to-video with reference images.** The Segment Engineer's prompt plus up to **3 reference images** (≤2 actor portraits + 1 theme image) are passed to Veo as `asset` reference images, anchoring character and location appearance.
+- **Segments 2 & 3 — video extension.** Each subsequent segment is generated by **extending the previous segment's video**, so motion, lighting, and composition flow continuously across the full scene. (Veo's reference-image conditioning and video-extension modes are mutually exclusive, so segments 2–3 rely on the inherited frames of segment 1 for consistency.)
+- Generation is asynchronous: the service submits a long-running Veo operation and **polls** until completion (up to 18 min), downloads the bytes, uploads to GCS, extracts the first frame as the scene thumbnail, and records URIs in Firestore.
 
-Start the backend server:
-
-```bash
-uvicorn main:app --reload --port 8000
-```
-
-The API will be available at `http://localhost:8000`. You can explore the interactive API docs at `http://localhost:8000/docs`.
+An **Apixo** provider ([`apixoService.py`](server/api/apixo/apixoService.py)) mirrors the same image and video generation paths as a fallback when Veo quota is exhausted.
 
 ---
 
-### Step 4 — Frontend Setup
-
-```bash
-cd client
-
-# Install dependencies
-npm install
-# or: bun install
-
-# Start the development server
-npm run dev
-# or: bun dev
-```
-
-The frontend will be available at `http://localhost:5173`.
-
-> The frontend is pre-configured to call the backend at `http://localhost:8000/api`. If you run the backend on a different port, update `client/src/api/axios.ts`.
-
----
-
-## Reproducible Testing — For Judges
-
-This section provides a step-by-step walkthrough to test all core features of SceneStudio.
-
-### Setup Checklist
-Before testing, verify:
-- [ ] Backend running at `http://localhost:8000` (check `/health` → `{"status": "ok"}`)
-- [ ] Frontend running at `http://localhost:5173`
-- [ ] `server/.env` contains a valid `GEMINI_API_KEY`
-- [ ] `server/keys/gemini-hackathon.json` exists with valid GCP credentials
-- [ ] Firestore database `gemini-hackathon` is accessible
-- [ ] GCS bucket exists and `BUCKET_NAME` in `GCSService.py` matches
-
-### Test 1 — Full Story Generation Pipeline
-
-1. Open `http://localhost:5173` — you should see the **Dashboard**
-2. Click **"Create New Story"**
-3. Enter a story prompt. Try one of these:
-
-   > *"A young detective named Mia investigates a mysterious disappearance in a foggy 1940s city. Her only clue is a pocket watch left at the scene."*
-
-   > *"Two rival AI robots in a distant future must work together to save their colony ship from a rogue navigation system."*
-
-4. Click **Submit**. The pipeline starts and you will be redirected.
-5. The **Director Agent** will ask 2–4 clarifying questions about genre, tone, characters, or setting. Answer each one.
-6. After answering, the pipeline continues through all phases:
-   - `processing_agents` — Screenwriter, Casting, Production Designer run in parallel
-   - `processing_assets` — Segment Engineer creates video prompts
-   - `generating_images` — Character and location images are generated
-   - `storyboard_complete` — Full storyboard is ready
-7. You will be navigated to the **Scene Editor** automatically.
-
-### Test 2 — Scene Editor & Storyboard Review
-
-1. In the Scene Editor, explore the interactive canvas:
-   - Pan by clicking and dragging the background
-   - Zoom with the scroll wheel
-   - Click a scene node to select it
-2. Open the **Assets** sidebar (left panel) to see:
-   - **Actors** — AI-generated character portraits with names and descriptions
-   - **Themes** — AI-generated location images
-   - **Script** — Scene summaries and choice connections
-3. Click any scene card to preview its thumbnail and summary.
-
-### Test 3 — Video Generation
-
-1. In the Scene Editor, click on any scene
-2. Click **"Generate Video"**
-3. Select a video provider:
-   - **Gemini (Veo)** — uses Google's Veo 3 model directly (requires Veo API access)
-   - **Apixo** — fallback provider (requires Apixo API key)
-4. Video generation takes **5–15 minutes** per scene (Veo polls for completion)
-5. Once complete, the scene card updates with a video thumbnail
-6. Click the scene card again and click **Play** to watch the generated cinematic scene (~24 seconds: 3 × 8-second segments merged)
-
-### Test 4 — Add Scene
-
-1. In the Scene Editor, click **"Add Scene"**
-2. Describe the new scene you want to add (e.g., *"A tense confrontation in the detective's office"*)
-3. The **Scene Director Agent** may ask clarifying questions — answer them
-4. After processing, the new scene appears on the storyboard canvas
-5. Generate video for the new scene using Test 3 steps above
-
-### Important Notes for Judges
-
-> **Video generation rate limits**: Veo has a limited quota per day (typically 5–10 video generations). If you hit a quota error, either wait or switch to the Apixo provider.
-
-> **Generation costs**: Veo video is billed per second of output. Each full scene (~24 seconds) costs approximately $1–3. We recommend testing with 1–2 scenes to control costs.
-
-> **Image generation**: Gemini Image generation is fast (~5–10 seconds per image) and happens automatically as part of the pipeline. No additional action is needed.
-
-> **Pipeline duration**: The full story generation pipeline (without video) takes approximately **2–5 minutes** depending on the number of scenes and API response times.
-
----
-
-## Architecture
-
-See [docs/architecture.md](docs/architecture.md) for a detailed breakdown including:
-- Multi-agent pipeline diagram
-- Video generation sequence
-- Firestore document structure
-- Frontend-backend API contract
+## Architecture Diagrams
 
 ### Main Generation Pipeline
 

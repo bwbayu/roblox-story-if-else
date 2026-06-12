@@ -37,14 +37,12 @@ APP_NAME = "scene-studio"
 load_dotenv()
 _genai_client = None
 
-def _get_genai_client(api_key: str | None = None):
+def _get_genai_client():
     global _genai_client
-    if api_key:
-        return genai.Client(api_key=api_key)
     if _genai_client is None:
         key = os.getenv("GEMINI_API_KEY")
         if not key:
-            raise GeminiApiKeyError("No Gemini API key provided. Please set your API key in Settings.")
+            raise GeminiApiKeyError("No Gemini API key provided. Please set GEMINI_API_KEY in server/.env.")
         _genai_client = genai.Client(api_key=key)
     return _genai_client
 
@@ -61,10 +59,13 @@ class storyBoardService:
     def __init__(self):
         """Initialise the Google ADK in-memory session service used by all agent runners."""
         self._session_service = InMemorySessionService()
-        self._env_lock = asyncio.Lock()
 
-    async def _call_agent(self, agent, message: str, api_key: str | None = None) -> str:
-        """Run a single stateless agent invocation and return the final response text."""
+    async def _call_agent(self, agent, message: str) -> str:
+        """Run a single stateless agent invocation and return the final response text.
+
+        Agents authenticate via the ambient env key (GOOGLE_API_KEY / GEMINI_API_KEY)
+        loaded at startup; no per-request key is injected.
+        """
         session_id = str(uuid.uuid4())
         user_id = "pipeline"
 
@@ -74,45 +75,35 @@ class storyBoardService:
             session_id=session_id,
         )
 
-        async with self._env_lock:
-            old_key = os.environ.get("GOOGLE_API_KEY")
-            try:
-                if api_key:
-                    os.environ["GOOGLE_API_KEY"] = api_key
+        try:
+            runner = Runner(
+                agent=agent,
+                app_name=APP_NAME,
+                session_service=self._session_service,
+            )
 
-                runner = Runner(
-                    agent=agent,
-                    app_name=APP_NAME,
-                    session_service=self._session_service,
-                )
+            content = types.Content(role="user", parts=[types.Part(text=message)])
 
-                content = types.Content(role="user", parts=[types.Part(text=message)])
+            response_text = ""
+            async for event in runner.run_async(
+                user_id=user_id,
+                session_id=session_id,
+                new_message=content,
+            ):
+                if event.is_final_response() and event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if hasattr(part, "text") and part.text:
+                            response_text = part.text
+                            break
 
-                response_text = ""
-                async for event in runner.run_async(
-                    user_id=user_id,
-                    session_id=session_id,
-                    new_message=content,
-                ):
-                    if event.is_final_response() and event.content and event.content.parts:
-                        for part in event.content.parts:
-                            if hasattr(part, "text") and part.text:
-                                response_text = part.text
-                                break
+            return response_text
+        except GeminiApiKeyError:
+            raise
+        except Exception as exc:
+            raise_if_api_key_error(exc)
+            raise
 
-                return response_text
-            except GeminiApiKeyError:
-                raise
-            except Exception as exc:
-                raise_if_api_key_error(exc)
-                raise
-            finally:
-                if old_key is not None:
-                    os.environ["GOOGLE_API_KEY"] = old_key
-                elif api_key and "GOOGLE_API_KEY" in os.environ:
-                    del os.environ["GOOGLE_API_KEY"]
-
-    async def _run_director_agent(self, script: str, qa_history: list[QAPair], api_key: str | None = None) -> DirectorOutput:
+    async def _run_director_agent(self, script: str, qa_history: list[QAPair]) -> DirectorOutput:
         """
         Call the Director agent with the script and Q&A history.
         Returns either questions to ask the user or a complete production analysis.
@@ -121,7 +112,7 @@ class storyBoardService:
             "script": script,
             "qa_history": [{"question": qa.question, "selected_options": qa.selected_options} for qa in qa_history],
         }
-        response = await self._call_agent(director_agent, json.dumps(payload, ensure_ascii=False), api_key=api_key)
+        response = await self._call_agent(director_agent, json.dumps(payload, ensure_ascii=False))
 
         cleaned = response.strip()
         if cleaned.startswith("```"):
@@ -131,7 +122,7 @@ class storyBoardService:
         return DirectorOutput.model_validate_json(cleaned)
 
     async def _generate_thumbnail(
-        self, session_id: str, actors: list, themes: list, analysis: DirectorAnalysis, api_key: str | None = None
+        self, session_id: str, actors: list, themes: list, analysis: DirectorAnalysis
     ) -> tuple[str | None, str | None]:
         """
         Generate a cinematic thumbnail image using Gemini Flash Image.
@@ -159,7 +150,7 @@ class storyBoardService:
         )
 
         try:
-            response = await _get_genai_client(api_key=api_key).aio.models.generate_content(
+            response = await _get_genai_client().aio.models.generate_content(
                 model="gemini-3.1-flash-image-preview",
                 contents=[prompt],
             )
@@ -224,7 +215,7 @@ class storyBoardService:
             return None, None
 
     async def _run_multi_agent(
-        self, session: SessionState, analysis: DirectorAnalysis, api_key: str | None = None
+        self, session: SessionState, analysis: DirectorAnalysis
     ) -> StoryBoard:
         """
         Run the full production pipeline:
@@ -241,9 +232,9 @@ class storyBoardService:
         )
 
         # Phase 2: Parallel execution of the three specialist agents
-        screenwriter_task = self._call_agent(screenwriter_agent, specialist_payload, api_key=api_key)
-        casting_task = self._call_agent(casting_agent, specialist_payload, api_key=api_key)
-        designer_task = self._call_agent(production_designer_agent, specialist_payload, api_key=api_key)
+        screenwriter_task = self._call_agent(screenwriter_agent, specialist_payload)
+        casting_task = self._call_agent(casting_agent, specialist_payload)
+        designer_task = self._call_agent(production_designer_agent, specialist_payload)
 
         screenwriter_raw, casting_raw, designer_raw = await asyncio.gather(
             screenwriter_task, casting_task, designer_task
@@ -264,8 +255,8 @@ class storyBoardService:
         )
 
         engineer_raw, (thumb_uri, thumb_url) = await asyncio.gather(
-            self._call_agent(segment_engineer_agent, engineer_payload, api_key=api_key),
-            self._generate_thumbnail(session.session_id, casting_output.actors, designer_output.themes, analysis, api_key=api_key),
+            self._call_agent(segment_engineer_agent, engineer_payload),
+            self._generate_thumbnail(session.session_id, casting_output.actors, designer_output.themes, analysis),
         )
         engineer_output = SegmentEngineerOutput.model_validate_json(_clean_json(engineer_raw))
 
@@ -300,7 +291,7 @@ class storyBoardService:
 
         return storyboard
 
-    async def run_agent_pipeline(self, session: SessionState, pipeline_tasks: dict[str, asyncio.Task], api_key: str | None = None) -> SessionResponse:
+    async def run_agent_pipeline(self, session: SessionState, pipeline_tasks: dict[str, asyncio.Task]) -> SessionResponse:
         """
         Call the Director with the current script + Q&A history.
         If the Director asks questions, update session and return them.
@@ -308,7 +299,7 @@ class storyBoardService:
         """
         # run director agent
         try:
-            director_output = await self._run_director_agent(session.script, session.qa_history, api_key=api_key)
+            director_output = await self._run_director_agent(session.script, session.qa_history)
         except GeminiApiKeyError as e:
             session.status = "error"
             session.error = f"api_key_error: {e}"
@@ -351,7 +342,7 @@ class storyBoardService:
         async def _pipeline():
             """Background coroutine: runs the full multi-agent pipeline and updates session + Firestore on completion or error."""
             try:
-                storyboard = await self._run_multi_agent(session, analysis, api_key=api_key)
+                storyboard = await self._run_multi_agent(session, analysis)
                 session.storyboard = storyboard
                 session.status = "complete"
                 await firestore_service.update_session_status(session.session_id, "complete")

@@ -34,7 +34,6 @@ class PipelineService:
         self,
         session: SessionState,
         pipeline_tasks: dict[str, asyncio.Task],
-        gemini_api_key: str | None = None,
     ) -> SessionResponse:
         """
         Run the director agent Q&A loop.
@@ -47,7 +46,7 @@ class PipelineService:
         # Phase 1: Director agent
         try:
             director_output = await self._storyboard_service._run_director_agent(
-                session.script, session.qa_history, api_key=gemini_api_key
+                session.script, session.qa_history
             )
         except GeminiApiKeyError as e:
             session.status = "error"
@@ -96,7 +95,7 @@ class PipelineService:
             """
             try:
                 # ── Phase 1: Storyboard assembly ──────────────────────────────
-                storyboard = await self._storyboard_service._run_multi_agent(session, analysis, api_key=gemini_api_key)
+                storyboard = await self._storyboard_service._run_multi_agent(session, analysis)
                 session.storyboard = storyboard
                 # _run_multi_agent leaves session.status as "processing_assets"
                 # and storyboard.status as "generating" in Firestore.
@@ -117,13 +116,11 @@ class PipelineService:
                         session_id=session.session_id,
                         story_id=storyboard.story_id,
                         actors=storyboard.actors,
-                        gemini_api_key=gemini_api_key,
                     ),
                     generate_and_save_theme_images(
                         session_id=session.session_id,
                         story_id=storyboard.story_id,
                         themes=storyboard.themes,
-                        gemini_api_key=gemini_api_key,
                     ),
                 )
                 # After gather, storyboard.actors[*].anchor_image_gcs_uri and

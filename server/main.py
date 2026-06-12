@@ -7,13 +7,25 @@ Endpoints:
   GET  /api/session/{id}           — retrieve current session state
 """
 
+import os
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI
+# Google ADK agents authenticate via GOOGLE_API_KEY. Mirror the single env key
+# (GEMINI_API_KEY) into GOOGLE_API_KEY at startup so all agents pick it up.
+if os.getenv("GEMINI_API_KEY") and not os.getenv("GOOGLE_API_KEY"):
+    os.environ["GOOGLE_API_KEY"] = os.environ["GEMINI_API_KEY"]
+
+# When true, the API rejects all mutating (non-GET) requests and hides the docs.
+# Used for public read-only gallery deployments. Defaults to false so local dev
+# and full deployments are unaffected.
+READ_ONLY = os.getenv("READ_ONLY", "false").lower() in ("true", "1", "yes")
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from api.story_board.storyBoardRoute import _pipeline_tasks, router as storyBoardRoute
 from api.story_board.storyBoardConsumerRoute import router as storyBoardConsumerRoute
@@ -39,7 +51,25 @@ app = FastAPI(
     description="AI-powered interactive storyboard generation using multi-agent orchestration",
     version="0.1.0",
     lifespan=lifespan,
+    docs_url=None if READ_ONLY else "/docs",
+    redoc_url=None if READ_ONLY else "/redoc",
+    openapi_url=None if READ_ONLY else "/openapi.json",
 )
+
+
+# Reject all mutating requests when running in read-only mode. Declared before the
+# CORS middleware so that CORS stays the outermost layer (Starlette runs the
+# last-registered middleware first) and still attaches CORS headers to the 403.
+# GET/HEAD are reads; OPTIONS must pass through for CORS preflight.
+@app.middleware("http")
+async def enforce_read_only(request: Request, call_next):
+    if READ_ONLY and request.method not in ("GET", "HEAD", "OPTIONS"):
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Server is running in read-only mode."},
+        )
+    return await call_next(request)
+
 
 app.add_middleware(
     CORSMiddleware,
